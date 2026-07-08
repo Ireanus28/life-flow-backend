@@ -35,7 +35,7 @@ app.use("/api/public", publicRouter);
 
 const PORT = Number(process.env.PORT) || 4000;
 app.listen(PORT, () => {
-  console.log(`LifeFlow backend listening on :${PORT}`);
+  console.log(`LifeFlow backend listening on  :${PORT}`);
 });
 
 // Persistent-server deploy target (ECS/Container Service) means the
