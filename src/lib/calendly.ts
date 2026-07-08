@@ -17,6 +17,11 @@ export type CalendlyScheduledEvent = {
   location: string | null;
 };
 
+// Distinguishes "no data yet" from "Calendly rejected the request" — the
+// dashboard shows a very different message for each instead of both
+// silently rendering as an empty list.
+export type CalendlyResult<T> = { items: T[]; authError: boolean };
+
 function calendlyHeaders() {
   return {
     Authorization: `Bearer ${process.env.CALENDLY_API_KEY}`,
@@ -61,9 +66,9 @@ function getCurrentUserUri(): string | null {
   }
 }
 
-export async function getBookableEventTypes(): Promise<CalendlyEventType[]> {
+export async function getBookableEventTypes(): Promise<CalendlyResult<CalendlyEventType>> {
   const userUri = getCurrentUserUri();
-  if (!userUri) return [];
+  if (!userUri) return { items: [], authError: !!process.env.CALENDLY_API_KEY };
 
   try {
     const url = new URL(`${CALENDLY_API_BASE}/event_types`);
@@ -73,10 +78,10 @@ export async function getBookableEventTypes(): Promise<CalendlyEventType[]> {
     const res = await fetch(url, { headers: calendlyHeaders() });
     if (!res.ok) {
       console.error(`Calendly /event_types failed: ${res.status} ${await res.text()}`);
-      return [];
+      return { items: [], authError: res.status === 401 || res.status === 403 };
     }
     const data = (await res.json()) as any;
-    return (data?.collection ?? []).map(
+    const items = (data?.collection ?? []).map(
       (e: { uri: string; name: string; scheduling_url: string; duration: number; active: boolean }) => ({
         uri: e.uri,
         name: e.name,
@@ -85,15 +90,16 @@ export async function getBookableEventTypes(): Promise<CalendlyEventType[]> {
         active: e.active,
       })
     );
+    return { items, authError: false };
   } catch (err) {
     console.error("Calendly /event_types request threw:", err);
-    return [];
+    return { items: [], authError: false };
   }
 }
 
-export async function getUpcomingScheduledEvents(limit = 10): Promise<CalendlyScheduledEvent[]> {
+export async function getUpcomingScheduledEvents(limit = 10): Promise<CalendlyResult<CalendlyScheduledEvent>> {
   const userUri = getCurrentUserUri();
-  if (!userUri) return [];
+  if (!userUri) return { items: [], authError: !!process.env.CALENDLY_API_KEY };
 
   try {
     const url = new URL(`${CALENDLY_API_BASE}/scheduled_events`);
@@ -106,10 +112,10 @@ export async function getUpcomingScheduledEvents(limit = 10): Promise<CalendlySc
     const res = await fetch(url, { headers: calendlyHeaders() });
     if (!res.ok) {
       console.error(`Calendly /scheduled_events failed: ${res.status} ${await res.text()}`);
-      return [];
+      return { items: [], authError: res.status === 401 || res.status === 403 };
     }
     const data = (await res.json()) as any;
-    return (data?.collection ?? []).map(
+    const items = (data?.collection ?? []).map(
       (e: {
         uri: string;
         name: string;
@@ -126,8 +132,9 @@ export async function getUpcomingScheduledEvents(limit = 10): Promise<CalendlySc
         location: e.location?.join_url ?? e.location?.location ?? null,
       })
     );
+    return { items, authError: false };
   } catch (err) {
     console.error("Calendly /scheduled_events request threw:", err);
-    return [];
+    return { items: [], authError: false };
   }
 }

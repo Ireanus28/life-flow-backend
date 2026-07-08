@@ -6,11 +6,11 @@ export const calendlyRouter = Router();
 calendlyRouter.use(requireAuth);
 
 calendlyRouter.get("/event-types", async (_req, res) => {
-  const eventTypes = await getBookableEventTypes();
-  res.json({ eventTypes, configured: isCalendlyConfigured() });
+  const { items: eventTypes, authError } = await getBookableEventTypes();
+  res.json({ eventTypes, configured: isCalendlyConfigured(), authError });
 });
 
 calendlyRouter.get("/scheduled-events", async (_req, res) => {
-  const events = await getUpcomingScheduledEvents();
-  res.json({ events, configured: isCalendlyConfigured() });
+  const { items: events, authError } = await getUpcomingScheduledEvents();
+  res.json({ events, configured: isCalendlyConfigured(), authError });
 });
