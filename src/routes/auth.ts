@@ -60,7 +60,16 @@ authRouter.post("/login", async (req, res) => {
 authRouter.get("/me", requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.userId! },
-    select: { id: true, name: true, email: true, onboardedAt: true, timezone: true, wakeTime: true, primaryMode: true },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      onboardedAt: true,
+      timezone: true,
+      wakeTime: true,
+      primaryMode: true,
+      tier: true,
+    },
   });
   if (!user) return res.status(401).json({ error: "Unauthorized" });
   res.json({ user });
