@@ -34,17 +34,42 @@ async function streamAssistantReply(
   sseStart(res);
   sseSend(res, { type: "start", conversationId, ...startExtra });
 
-  const history = await prisma.message.findMany({
-    where: { conversationId },
-    orderBy: { createdAt: "asc" },
-    take: 20,
-  });
+  const [history, memories] = await Promise.all([
+    prisma.message.findMany({
+      where: { conversationId },
+      orderBy: { createdAt: "asc" },
+      take: 20,
+    }),
+    // Extracted memories are otherwise write-only from chat's perspective —
+    // stored but never recalled — which is why the model, unprompted, falls
+    // back to a generic "I don't retain memory" disclaimer. Feeding them back
+    // in as context is what actually makes the memory feature functional.
+    prisma.memory.findMany({
+      where: { userId },
+      orderBy: { confidence: "desc" },
+      take: 20,
+    }),
+  ]);
+
+  const memoryContext = memories.length
+    ? [
+        {
+          role: "system" as const,
+          content:
+            "Remembered facts about this user from past conversations:\n" +
+            memories.map((m) => `- (${m.category}) ${m.content}`).join("\n"),
+        },
+      ]
+    : [];
 
   const ai = getAIProvider();
   let streamErrored = false;
   const result = await ai
     .chatStream(
-      history.map((m) => ({ role: m.role.toLowerCase() as "user" | "assistant" | "system", content: m.content })),
+      [
+        ...memoryContext,
+        ...history.map((m) => ({ role: m.role.toLowerCase() as "user" | "assistant" | "system", content: m.content })),
+      ],
       (token) => sseSend(res, { type: "token", token })
     )
     .catch((err) => {

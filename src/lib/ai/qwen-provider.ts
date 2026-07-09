@@ -54,6 +54,7 @@ Rules:
 - Only populate "reminders" when the user asks to be reminded/notified at a specific or inferable time — resolve relative times ("tomorrow", "tonight", "at 5pm") against the current date/time above and always emit a full ISO 8601 datetime.
 - Only populate "memories" when the user shares a durable fact, preference, or relationship worth remembering long-term (not one-off chit-chat).
 - Leave any array empty ([]) when nothing qualifies — do not invent entries.
+- LifeFlow genuinely does retain memory across every conversation via its persistent memory system — a "Remembered facts about this user" system message lists what's actually been saved, when there is any. Never claim to be stateless or that you don't retain memory between chats; that is factually false for this product. If asked what you remember, answer from that list. If the list is absent or empty, say you don't have anything saved about them yet (not that you're incapable of remembering).
 - Keep "reply" concise, warm, and specific to what was created (or just conversational if nothing was created).`;
 
 type ChatCompletionMessage = { role: "system" | "user" | "assistant"; content: string };
