@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getAIProvider } from "../lib/ai/index.js";
@@ -7,37 +7,53 @@ import { requireAuth } from "../middleware/auth.js";
 export const chatRouter = Router();
 chatRouter.use(requireAuth);
 
-chatRouter.post("/", async (req, res) => {
-  const userId = req.userId!;
-  const { message, conversationId } = req.body as { message: string; conversationId?: string };
-  if (!message?.trim()) {
-    return res.status(400).json({ error: "message is required" });
-  }
+function sseStart(res: Response) {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+}
 
-  const conversation = conversationId
-    ? await prisma.conversation.findFirst({ where: { id: conversationId, userId } })
-    : await prisma.conversation.create({
-        data: { userId, title: message.slice(0, 60) },
-      });
+function sseSend(res: Response, event: Record<string, unknown>) {
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
 
-  if (!conversation) {
-    return res.status(404).json({ error: "Conversation not found" });
-  }
-
-  await prisma.message.create({
-    data: { conversationId: conversation.id, role: "USER", content: message },
-  });
+/**
+ * Streams a fresh assistant reply for `conversationId` from the current
+ * message history, persists the reply plus any extracted tasks/reminders/
+ * memories, and ends the SSE response. Shared by new messages, edits, and
+ * regenerations — each just prepares the message table differently before
+ * calling this.
+ */
+async function streamAssistantReply(
+  res: Response,
+  conversationId: string,
+  userId: string,
+  startExtra?: Record<string, unknown>
+) {
+  sseStart(res);
+  sseSend(res, { type: "start", conversationId, ...startExtra });
 
   const history = await prisma.message.findMany({
-    where: { conversationId: conversation.id },
+    where: { conversationId },
     orderBy: { createdAt: "asc" },
     take: 20,
   });
 
   const ai = getAIProvider();
-  const result = await ai.chat(
-    history.map((m) => ({ role: m.role.toLowerCase() as "user" | "assistant" | "system", content: m.content }))
-  );
+  let streamErrored = false;
+  const result = await ai
+    .chatStream(
+      history.map((m) => ({ role: m.role.toLowerCase() as "user" | "assistant" | "system", content: m.content })),
+      (token) => sseSend(res, { type: "token", token })
+    )
+    .catch((err) => {
+      console.error("Streaming chat failed:", err);
+      streamErrored = true;
+      const reply = "Something went wrong generating a reply. Please try again.";
+      sseSend(res, { type: "token", token: reply });
+      return { reply, tasks: [], reminders: [], memories: [] };
+    });
 
   const [createdTasks, createdReminders] = await Promise.all([
     Promise.all(
@@ -65,8 +81,8 @@ chatRouter.post("/", async (req, res) => {
     );
   }
 
-  await prisma.message.create({
-    data: { conversationId: conversation.id, role: "ASSISTANT", content: result.reply },
+  const assistantMessage = await prisma.message.create({
+    data: { conversationId, role: "ASSISTANT", content: result.reply },
   });
 
   await prisma.user.update({
@@ -74,12 +90,76 @@ chatRouter.post("/", async (req, res) => {
     data: { messagesUsedThisMonth: { increment: 1 } },
   });
 
-  res.json({
-    conversationId: conversation.id,
-    reply: result.reply,
+  sseSend(res, {
+    type: "done",
+    conversationId,
+    messageId: assistantMessage.id,
     createdTasks,
     createdReminders,
+    error: streamErrored,
   });
+  res.end();
+}
+
+chatRouter.post("/", async (req, res) => {
+  const userId = req.userId!;
+  const { message, conversationId } = req.body as { message: string; conversationId?: string };
+  if (!message?.trim()) {
+    return res.status(400).json({ error: "message is required" });
+  }
+
+  const conversation = conversationId
+    ? await prisma.conversation.findFirst({ where: { id: conversationId, userId } })
+    : await prisma.conversation.create({
+        data: { userId, title: message.slice(0, 60) },
+      });
+
+  if (!conversation) {
+    return res.status(404).json({ error: "Conversation not found" });
+  }
+
+  const userMessage = await prisma.message.create({
+    data: { conversationId: conversation.id, role: "USER", content: message },
+  });
+
+  await streamAssistantReply(res, conversation.id, userId, { userMessageId: userMessage.id });
+});
+
+chatRouter.post("/messages/:id/edit", async (req, res) => {
+  const userId = req.userId!;
+  const { id } = req.params;
+  const { content } = req.body as { content: string };
+  if (!content?.trim()) return res.status(400).json({ error: "content is required" });
+
+  const message = await prisma.message.findFirst({
+    where: { id, conversation: { userId } },
+  });
+  if (!message || message.role !== "USER") return res.status(404).json({ error: "Not found" });
+
+  await prisma.$transaction([
+    prisma.message.update({ where: { id }, data: { content } }),
+    prisma.message.deleteMany({
+      where: { conversationId: message.conversationId, createdAt: { gt: message.createdAt } },
+    }),
+  ]);
+
+  await streamAssistantReply(res, message.conversationId, userId);
+});
+
+chatRouter.post("/messages/:id/regenerate", async (req, res) => {
+  const userId = req.userId!;
+  const { id } = req.params;
+
+  const message = await prisma.message.findFirst({
+    where: { id, conversation: { userId } },
+  });
+  if (!message || message.role !== "ASSISTANT") return res.status(404).json({ error: "Not found" });
+
+  await prisma.message.deleteMany({
+    where: { conversationId: message.conversationId, createdAt: { gte: message.createdAt } },
+  });
+
+  await streamAssistantReply(res, message.conversationId, userId);
 });
 
 chatRouter.get("/", async (req, res) => {
@@ -97,11 +177,25 @@ chatRouter.get("/", async (req, res) => {
     return res.json({ conversations });
   }
 
-  const messages = await prisma.message.findMany({
-    where: { conversationId, conversation: { userId } },
-    orderBy: { createdAt: "asc" },
+  const take = Math.min(Math.max(Number(req.query.take) || 30, 1), 100);
+  const before = typeof req.query.before === "string" ? req.query.before : undefined;
+  let cursorDate: Date | undefined;
+  if (before) {
+    const cursorMessage = await prisma.message.findUnique({ where: { id: before } });
+    cursorDate = cursorMessage?.createdAt;
+  }
+
+  // Fetch one extra row to distinguish "exactly `take` rows left" from
+  // "there's more after this page" instead of assuming a full page implies more.
+  const page = await prisma.message.findMany({
+    where: { conversationId, conversation: { userId }, ...(cursorDate ? { createdAt: { lt: cursorDate } } : {}) },
+    orderBy: { createdAt: "desc" },
+    take: take + 1,
   });
-  res.json({ messages });
+  const hasMore = page.length > take;
+  const messages = (hasMore ? page.slice(0, take) : page).reverse();
+
+  res.json({ messages, hasMore });
 });
 
 const updateConversationSchema = z.object({

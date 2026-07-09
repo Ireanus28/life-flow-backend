@@ -36,5 +36,7 @@ export interface AIResponse {
 export interface AIProvider {
   name: string;
   chat(messages: ChatMessage[]): Promise<AIResponse>;
+  /** Same extraction as chat(), but invokes onToken with reply text as it's generated. */
+  chatStream(messages: ChatMessage[], onToken: (token: string) => void): Promise<AIResponse>;
   embed(text: string): Promise<number[]>;
 }

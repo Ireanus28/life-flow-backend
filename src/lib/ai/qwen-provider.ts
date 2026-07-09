@@ -7,6 +7,7 @@ import type {
   ExtractedReminder,
   ExtractedTask,
 } from "./provider.js";
+import { ReplyStreamExtractor } from "./reply-stream-extractor.js";
 
 // Dates are validated loosely (any string) and parsed leniently below rather
 // than with zod's strict `.datetime()` — models don't reliably emit exact
@@ -108,36 +109,117 @@ export class QwenCloudProvider implements AIProvider {
       const raw = data?.choices?.[0]?.message?.content;
       if (typeof raw !== "string") return this.fallbackResponse();
 
-      const parsed = modelResponseSchema.safeParse(JSON.parse(raw));
-      if (!parsed.success) {
-        console.error("QwenCloud response failed schema validation:", parsed.error.flatten());
-        return this.fallbackResponse();
-      }
-
-      const tasks: ExtractedTask[] = parsed.data.tasks.map((t) => {
-        const dueDate = t.dueDate ? new Date(t.dueDate) : undefined;
-        return {
-          title: t.title,
-          // An unparseable due date shouldn't drop the task — just create it without one.
-          dueDate: dueDate && !isNaN(dueDate.getTime()) ? dueDate : undefined,
-          priority: t.priority ?? undefined,
-        };
-      });
-      const reminders: ExtractedReminder[] = parsed.data.reminders
-        .map((r) => ({ title: r.title, remindAt: new Date(r.remindAt) }))
-        // remindAt is required, so an unparseable one means dropping just this reminder.
-        .filter((r): r is ExtractedReminder => !isNaN(r.remindAt.getTime()));
-      const memories: ExtractedMemory[] = parsed.data.memories.map((m) => ({
-        content: m.content,
-        category: m.category,
-        confidence: m.confidence ?? 0.8,
-      }));
-
-      return { reply: parsed.data.reply, tasks, reminders, memories };
+      return this.parseModelJson(raw) ?? this.fallbackResponse();
     } catch (err) {
       console.error("QwenCloud chat request threw:", err);
       return this.fallbackResponse();
     }
+  }
+
+  async chatStream(messages: ChatMessage[], onToken: (token: string) => void): Promise<AIResponse> {
+    const chatMessages: ChatCompletionMessage[] = [
+      { role: "system", content: SYSTEM_PROMPT.replace("{{NOW}}", new Date().toISOString()) },
+      ...messages.map((m) => ({ role: m.role, content: m.content })),
+    ];
+
+    try {
+      const res = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.chatModel,
+          messages: chatMessages,
+          response_format: { type: "json_object" },
+          temperature: 0.4,
+          stream: true,
+        }),
+      });
+
+      if (!res.ok || !res.body) {
+        console.error(`QwenCloud stream request failed: ${res.status} ${res.body ? await res.text() : ""}`);
+        return this.fallbackResponse();
+      }
+
+      const extractor = new ReplyStreamExtractor();
+      let fullContent = "";
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let lineBuffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        lineBuffer += decoder.decode(value, { stream: true });
+
+        const lines = lineBuffer.split("\n");
+        lineBuffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const payload = trimmed.slice("data:".length).trim();
+          if (payload === "[DONE]") continue;
+
+          let delta: string | undefined;
+          try {
+            const json = JSON.parse(payload);
+            delta = json?.choices?.[0]?.delta?.content;
+          } catch {
+            continue;
+          }
+          if (typeof delta !== "string" || !delta) continue;
+
+          fullContent += delta;
+          const newText = extractor.push(delta);
+          if (newText) onToken(newText);
+        }
+      }
+
+      return this.parseModelJson(fullContent) ?? this.fallbackResponse();
+    } catch (err) {
+      console.error("QwenCloud stream request threw:", err);
+      return this.fallbackResponse();
+    }
+  }
+
+  private parseModelJson(raw: string): AIResponse | null {
+    let json: unknown;
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      console.error("QwenCloud response was not valid JSON");
+      return null;
+    }
+
+    const parsed = modelResponseSchema.safeParse(json);
+    if (!parsed.success) {
+      console.error("QwenCloud response failed schema validation:", parsed.error.flatten());
+      return null;
+    }
+
+    const tasks: ExtractedTask[] = parsed.data.tasks.map((t) => {
+      const dueDate = t.dueDate ? new Date(t.dueDate) : undefined;
+      return {
+        title: t.title,
+        // An unparseable due date shouldn't drop the task — just create it without one.
+        dueDate: dueDate && !isNaN(dueDate.getTime()) ? dueDate : undefined,
+        priority: t.priority ?? undefined,
+      };
+    });
+    const reminders: ExtractedReminder[] = parsed.data.reminders
+      .map((r) => ({ title: r.title, remindAt: new Date(r.remindAt) }))
+      // remindAt is required, so an unparseable one means dropping just this reminder.
+      .filter((r): r is ExtractedReminder => !isNaN(r.remindAt.getTime()));
+    const memories: ExtractedMemory[] = parsed.data.memories.map((m) => ({
+      content: m.content,
+      category: m.category,
+      confidence: m.confidence ?? 0.8,
+    }));
+
+    return { reply: parsed.data.reply, tasks, reminders, memories };
   }
 
   async embed(text: string): Promise<number[]> {

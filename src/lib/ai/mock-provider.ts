@@ -119,6 +119,19 @@ export class MockAIProvider implements AIProvider {
     return { reply, tasks, reminders, memories };
   }
 
+  async chatStream(messages: ChatMessage[], onToken: (token: string) => void): Promise<AIResponse> {
+    const result = await this.chat(messages);
+    // No real token stream to relay in offline mode — split on word boundaries
+    // and drip-feed it so the UI's streaming path still has something non-trivial
+    // to exercise locally without a QWEN_API_KEY.
+    const words = result.reply.split(/(?<=\s)/);
+    for (const word of words) {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      onToken(word);
+    }
+    return result;
+  }
+
   async embed(text: string): Promise<number[]> {
     // Deterministic pseudo-embedding (hashed bag-of-chars) purely so semantic
     // search code paths have something non-trivial to operate on in dev.
