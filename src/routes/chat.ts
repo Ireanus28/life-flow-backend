@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getAIProvider } from "../lib/ai/index.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -87,8 +88,8 @@ chatRouter.get("/", async (req, res) => {
 
   if (!conversationId) {
     const conversations = await prisma.conversation.findMany({
-      where: { userId },
-      orderBy: { updatedAt: "desc" },
+      where: { userId, archived: false },
+      orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
     });
     return res.json({ conversations });
   }
@@ -98,4 +99,31 @@ chatRouter.get("/", async (req, res) => {
     orderBy: { createdAt: "asc" },
   });
   res.json({ messages });
+});
+
+const updateConversationSchema = z.object({
+  title: z.string().trim().min(1).max(100).optional(),
+  pinned: z.boolean().optional(),
+  archived: z.boolean().optional(),
+});
+
+chatRouter.patch("/conversations/:id", async (req, res) => {
+  const { id } = req.params;
+  const existing = await prisma.conversation.findFirst({ where: { id, userId: req.userId! } });
+  if (!existing) return res.status(404).json({ error: "Not found" });
+
+  const parsed = updateConversationSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  const conversation = await prisma.conversation.update({ where: { id }, data: parsed.data });
+  res.json({ conversation });
+});
+
+chatRouter.delete("/conversations/:id", async (req, res) => {
+  const { id } = req.params;
+  const existing = await prisma.conversation.findFirst({ where: { id, userId: req.userId! } });
+  if (!existing) return res.status(404).json({ error: "Not found" });
+
+  await prisma.conversation.delete({ where: { id } });
+  res.json({ ok: true });
 });

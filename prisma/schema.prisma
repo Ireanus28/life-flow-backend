@@ -111,6 +111,8 @@ model Conversation {
   id        String    @id @default(cuid())
   userId    String
   title     String    @default("New conversation")
+  pinned    Boolean   @default(false)
+  archived  Boolean   @default(false)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages  Message[]
   createdAt DateTime  @default(now())
