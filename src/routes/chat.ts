@@ -87,8 +87,11 @@ chatRouter.get("/", async (req, res) => {
   const conversationId = typeof req.query.conversationId === "string" ? req.query.conversationId : undefined;
 
   if (!conversationId) {
+    // Includes archived conversations — the frontend buckets everything into
+    // Pinned/Recent/Older/Archived sections itself rather than needing a
+    // separate endpoint per section.
     const conversations = await prisma.conversation.findMany({
-      where: { userId, archived: false },
+      where: { userId },
       orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
     });
     return res.json({ conversations });
