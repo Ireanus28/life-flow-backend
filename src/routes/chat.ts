@@ -44,10 +44,14 @@ async function streamAssistantReply(
     // stored but never recalled — which is why the model, unprompted, falls
     // back to a generic "I don't retain memory" disclaimer. Feeding them back
     // in as context is what actually makes the memory feature functional.
+    // select only what the prompt needs — `embedding` is a real vector (used
+    // for semantic search elsewhere) and pulling it here on every chat
+    // message was pure wasted DB/serialization work.
     prisma.memory.findMany({
       where: { userId },
       orderBy: { confidence: "desc" },
       take: 20,
+      select: { content: true, category: true },
     }),
   ]);
 
