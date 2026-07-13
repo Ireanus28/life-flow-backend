@@ -66,6 +66,29 @@ function getCurrentUserUri(): string | null {
   }
 }
 
+/**
+ * The account's own public scheduling page (e.g. https://calendly.com/you),
+ * independent of whether any event type exists yet — this is what the
+ * dashboard's "Meetings" card links to so it's clickable even before the
+ * first event type is created. Requires the `users:read` scope, which this
+ * app's PAT doesn't currently have (see getCurrentUserUri's note) — returns
+ * null on that expected 403 rather than treating it as a broken connection.
+ */
+export async function getSchedulingUrl(): Promise<string | null> {
+  const userUri = getCurrentUserUri();
+  if (!userUri) return null;
+
+  try {
+    const res = await fetch(userUri, { headers: calendlyHeaders() });
+    if (!res.ok) return null;
+    const data = (await res.json()) as any;
+    return data?.resource?.scheduling_url ?? null;
+  } catch (err) {
+    console.error("Calendly /users request threw:", err);
+    return null;
+  }
+}
+
 export async function getBookableEventTypes(): Promise<CalendlyResult<CalendlyEventType>> {
   const userUri = getCurrentUserUri();
   if (!userUri) return { items: [], authError: !!process.env.CALENDLY_API_KEY };

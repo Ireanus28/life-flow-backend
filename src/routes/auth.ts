@@ -30,7 +30,11 @@ authRouter.post("/register", async (req, res) => {
       select: { id: true, name: true, email: true },
     });
 
-    res.status(201).json({ user });
+    // Issue a session token directly instead of making the frontend fire a
+    // second /api/auth/login call right after — one less network round trip
+    // that could fail and strand a just-registered user back on the login page.
+    const token = jwt.sign({ sub: user.id }, process.env.JWT_SECRET!, { expiresIn: "30d" });
+    res.status(201).json({ token, user });
   } catch (err) {
     console.error("Registration failed:", err);
     res.status(503).json({ error: "Couldn't create your account right now. Try again shortly." });
